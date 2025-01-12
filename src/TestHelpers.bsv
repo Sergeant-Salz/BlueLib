@@ -140,8 +140,9 @@ module mkScoreboardInorder#(String scoreboardName, Integer fifoDepth)(Scoreboard
     rule check;
         match {.dut,.dut_cycle} = dut_fifo.first; dut_fifo.deq();
         match {.reference,.ref_cycle} = ref_fifo.first; ref_fifo.deq();
-
-        let latency = abs(dut_cycle - ref_cycle);
+        let higher = max(dut_cycle, ref_cycle);
+        let lower = min(dut_cycle, ref_cycle);
+        let latency = abs(higher - lower);
 
         if (dut != reference) begin
             logger.log(ERROR, $format("Mismatch at transaction %d", transaction_counter));
