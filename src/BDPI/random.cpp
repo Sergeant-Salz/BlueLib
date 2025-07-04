@@ -2,6 +2,7 @@
 #include <functional> //for std::hash
 #include <string>
 #include <iostream>
+#include <cstdint>
 
 class RandomGen {
 public:
