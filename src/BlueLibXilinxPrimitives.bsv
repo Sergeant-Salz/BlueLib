@@ -180,13 +180,13 @@ interface XPM_SPRAM_Ifc#(numeric type addr_w, numeric type data_w);
     method Bit#(data_w) douta();
 endinterface
 
-import "BVI" XPM_MEMORY_SPRAM =
+import "BVI" xpm_memory_spram =
 module vMkXPMSPRAM#(Integer memSizeWords, Integer readLatencyA)(XPM_SPRAM_Ifc#(addr_w, data_w));
-	default_clock clka(CLK);
-	default_reset rst(resta);
+	default_clock clk(clka);
+	default_reset rst(rsta);
 
     parameter ADDR_WIDTH_A = valueOf(addr_w);
-    parameter BYTE_WRITE_WIDTH_A = valueOf(addr_w);
+    parameter BYTE_WRITE_WIDTH_A = valueOf(data_w); // Set to data_w for word-enabld writes or 8 for byte enabled writes
     parameter MEMORY_PRIMITIVE = "auto";
     parameter MEMORY_SIZE = memSizeWords;
     parameter READ_DATA_WIDTH_A = valueOf(data_w);
