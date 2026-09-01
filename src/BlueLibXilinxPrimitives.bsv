@@ -194,15 +194,16 @@ module vMkXPMSPRAM#(Integer memSizeWords, Integer readLatencyA)(XPM_SPRAM_Ifc#(a
     parameter READ_RESET_VALUE_A = "0";
     parameter WRITE_DATA_WIDTH_A = valueOf(data_w);
 
-    // Tie off some ports
+    // Permanently disable sleep and enable output register
     port sleep = 1'b0;
     port regcea = 1'b1;
 
-    // Methods to set values
-    // the inhigh indicates, that the method is always enabled
+    // Set address and enable
     method addra(addra) enable (ena);
+    // Set data in and write enable
     method dina(dina) enable (wea);
-    method douta douta(); // always ready
+    // Get output data (always ready)
+    method douta douta();
 
     schedule (addra) SB (dina);
     schedule (douta) CF (addra, dina);
@@ -211,7 +212,7 @@ endmodule
 
 module mkSPRAM#(Integer memSizeWords, Integer readLatencyA)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
 
-    // Create an inverted reset to use for the verilog module
+    // Invert the reset to match Xilinx active high
     Reset current_rst <- exposeCurrentReset;
     Reset rst_high_type <- mkResetInverter(current_rst);
     XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memSizeWords, readLatencyA, reset_by rst_high_type);
