@@ -6,6 +6,7 @@ import BRAM::*;
 import GetPut::*;
 import ClientServer::*;
 import List::*;
+import DefaultValue :: *;
 
 // Provides:
 // mkDNA_PORTE2
@@ -173,6 +174,40 @@ module mkICAPE3(ICAPE3_Ifc);
 	return _m;
 endmodule
 
+// Xilinx Parametrizable Macros for memory
+typedef enum {AUTO, BRAM, URAM, DISTRIBUTED, MIXED} XilinxMemoryPrimitive deriving (Bits, Eq, Bounded);
+
+instance DefaultValue#(XilinxMemoryPrimitive);
+    defaultValue = AUTO;
+endinstance
+
+function String xilinxMemPrimitiveToString(XilinxMemoryPrimitive x);
+    case (x)
+        AUTO:         return "auto";
+        BRAM:         return "block";
+        URAM:         return "ultra";
+        DISTRIBUTED:  return "distributed";
+        MIXED:        return "mixed";
+    endcase
+endfunction
+
+typedef union tagged {
+    void   None;
+    String File;
+} MemoryInitFile deriving (Eq);
+
+instance DefaultValue#(MemoryInitFile);
+    defaultValue = tagged None;
+endinstance
+
+typedef struct {
+    XilinxMemoryPrimitive memType;
+    Integer               memSizeWords;
+    Integer               readLatency;
+    MemoryInitFile        memoryInitFile;
+} XPMMemConfig;
+
+
 (* always_ready, always_enabled *)
 interface XPM_SPRAM_Ifc#(numeric type addr_w, numeric type data_w);
     method Action addra(Bit#(addr_w) addr);
@@ -181,18 +216,23 @@ interface XPM_SPRAM_Ifc#(numeric type addr_w, numeric type data_w);
 endinterface
 
 import "BVI" xpm_memory_spram =
-module vMkXPMSPRAM#(Integer memSizeWords, Integer readLatencyA)(XPM_SPRAM_Ifc#(addr_w, data_w));
+module vMkXPMSPRAM#(XPMMemConfig cfg)(XPM_SPRAM_Ifc#(addr_w, data_w));
 	default_clock clk(clka);
 	default_reset rst(rsta);
 
     parameter ADDR_WIDTH_A = valueOf(addr_w);
     parameter BYTE_WRITE_WIDTH_A = valueOf(data_w); // Set to data_w for word-enabld writes or 8 for byte enabled writes
-    parameter MEMORY_PRIMITIVE = "auto";
-    parameter MEMORY_SIZE = memSizeWords;
+    parameter MEMORY_PRIMITIVE = xilinxMemPrimitiveToString(cfg.memType);
+    parameter MEMORY_SIZE = cfg.memSizeWords;
     parameter READ_DATA_WIDTH_A = valueOf(data_w);
-    parameter READ_LATENCY_A = readLatencyA;
+    parameter READ_LATENCY_A = cfg.readLatency;
     parameter READ_RESET_VALUE_A = "0";
     parameter WRITE_DATA_WIDTH_A = valueOf(data_w);
+    parameter MEMORY_INIT_PARAM = "";
+    parameter MEMORY_INIT_FILE = case (cfg.memoryInitFile) matches
+                                    tagged None: "none";
+                                    tagged File .filename: filename;
+                                endcase;
 
     // Permanently disable sleep and enable output register
     port sleep = 1'b0;
@@ -210,20 +250,20 @@ module vMkXPMSPRAM#(Integer memSizeWords, Integer readLatencyA)(XPM_SPRAM_Ifc#(a
 endmodule
 
 
-module mkSPRAM#(Integer memSizeWords, Integer readLatencyA)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
+module mkSPRAM#(XPMMemConfig memconfig)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
 
     // Invert the reset to match Xilinx active high
     Reset current_rst <- exposeCurrentReset;
     Reset rst_high_type <- mkResetInverter(current_rst);
-    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memSizeWords, readLatencyA, reset_by rst_high_type);
+    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memconfig, reset_by rst_high_type);
 
     // Track read requests to return data after the appropriate latency
-    List#(Reg#(Bool)) request_legal <- List::replicateM(readLatencyA, mkRegU);
+    List#(Reg#(Bool)) request_legal <- List::replicateM(memconfig.readLatency, mkRegU);
     Wire#(Bool) read_request <- mkDWire(False);
 
     (* no_implicit_conditions *)
     rule propagate_request_legal;
-        for (Integer i = readLatencyA - 1; i > 0; i = i - 1) begin
+        for (Integer i = memconfig.readLatency - 1; i > 0; i = i - 1) begin
             request_legal[i] <= request_legal[i - 1];
         end
         request_legal[0] <= read_request;
@@ -231,7 +271,7 @@ module mkSPRAM#(Integer memSizeWords, Integer readLatencyA)(BRAMServer#(Bit#(add
 
     
     interface Get response;
-        method ActionValue#(Bit#(data_w)) get() if (request_legal[readLatencyA - 1]);
+        method ActionValue#(Bit#(data_w)) get() if (request_legal[memconfig.readLatency - 1]);
             return ram.douta();
         endmethod
     endinterface
