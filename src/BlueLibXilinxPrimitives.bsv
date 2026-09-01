@@ -6,6 +6,7 @@ import BRAM::*;
 import GetPut::*;
 import ClientServer::*;
 import List::*;
+import Connectable :: * ;
 
 // Provides:
 // mkDNA_PORTE2
@@ -208,57 +209,74 @@ typedef struct {
 
 
 (* always_ready, always_enabled *)
-interface XPM_SPRAM_Ifc#(numeric type addr_w, numeric type data_w);
+interface XPM_SPRAM_BE_Ifc#(numeric type addr_w, numeric type data_w, numeric type be_w);
     method Action addra(Bit#(addr_w) addr);
-    method Action dina(Bit#(data_w) data);
+    method Action dina(Bit#(be_w) be, Bit#(data_w) data);
     method Bit#(data_w) douta();
 endinterface
 
+// Byte-enabled BVI import module for Xilinx XPM SPRAM
 import "BVI" xpm_memory_spram =
-module vMkXPMSPRAM#(XPMMemConfig cfg)(XPM_SPRAM_Ifc#(addr_w, data_w));
+module vMkXPMSPRAM_BE#(XPMMemConfig cfg)(XPM_SPRAM_BE_Ifc#(addr_w, data_w, be_w))
+    provisos (
+        Div#(data_w, 8, be_w),
+        Mul#(be_w, 8, data_w)
+    );
+
     // Create an active high reset signal
     ReadOnly#(Bool) resetPositive <- isResetAsserted;
     port rsta = resetPositive;
-    no_reset; // do not use implicity reset
+    no_reset; // do not use implicit reset
 
     // Set clock port name
     default_clock clk(clka);
 
-    parameter ADDR_WIDTH_A = valueOf(addr_w);
-    parameter BYTE_WRITE_WIDTH_A = valueOf(data_w); // Set to data_w for word-enabld writes or 8 for byte enabled writes
-    parameter MEMORY_PRIMITIVE = xilinxMemPrimitiveToString(cfg.memType);
-    parameter MEMORY_SIZE = cfg.memSizeWords;
-    parameter READ_DATA_WIDTH_A = valueOf(data_w);
-    parameter READ_LATENCY_A = cfg.readLatency;
+    parameter ADDR_WIDTH_A       = valueOf(addr_w);
+    parameter BYTE_WRITE_WIDTH_A = 8; // 8 for byte-enabled writes
+    parameter MEMORY_PRIMITIVE   = xilinxMemPrimitiveToString(cfg.memType);
+    parameter MEMORY_SIZE        = cfg.memSizeWords;
+    parameter READ_DATA_WIDTH_A  = valueOf(data_w);
+    parameter READ_LATENCY_A     = cfg.readLatency;
     parameter READ_RESET_VALUE_A = "0";
     parameter WRITE_DATA_WIDTH_A = valueOf(data_w);
-    parameter MEMORY_INIT_PARAM = "";
-    parameter MEMORY_INIT_FILE = case (cfg.memoryInitFile) matches
-                                    tagged None: "none";
-                                    tagged File .filename: filename;
-                                endcase;
+    parameter MEMORY_INIT_PARAM  = "";
+    parameter MEMORY_INIT_FILE   = case (cfg.memoryInitFile) matches
+                                      tagged None: "none";
+                                      tagged File .filename: filename;
+                                  endcase;
 
     // Permanently disable sleep and enable output register
-    port sleep = 1'b0;
+    port sleep  = 1'b0;
     port regcea = 1'b1;
 
     // Set address and enable
     method addra(addra) enable (ena);
-    // Set data in and write enable
-    method dina(dina) enable (wea);
-    // Get output data (always ready)
+    method dina(wea, dina) enable ((*inhigh*) EN0);
     method douta douta();
 
     schedule (addra) SB (dina);
     schedule (douta) CF (addra, dina);
+    schedule (addra) C (addra);
+    schedule (dina) C (dina);
+    schedule (douta) CF (douta);
 endmodule
+module mkSPRAM_BE#(XPMMemConfig memconfig)(BRAMServerBE#(Bit#(addr_w), Bit#(data_w), be_w))
+    provisos (
+        Div#(data_w, 8, be_w),
+        Mul#(be_w, 8, data_w)
+    );
 
+    XPM_SPRAM_BE_Ifc#(addr_w, data_w, be_w) ram <- vMkXPMSPRAM_BE(memconfig);
 
-module mkSPRAM#(XPMMemConfig memconfig)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
+    // Default value for the byte-enable/wea port
+    Wire#(Bit#(be_w))   be_wire   <- mkDWire(0);
+    Wire#(Bit#(data_w)) data_wire <- mkDWire(?);
+    (* no_implicit_conditions, fire_when_enabled *)
+    rule drive_dina;
+        ram.dina(be_wire, data_wire);
+    endrule
 
-    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memconfig);
-
-    // Track read requests to return data after the appropriate latency
+    // Response latency pipeline tracking
     List#(Reg#(Bool)) request_legal <- List::replicateM(memconfig.readLatency, mkRegU);
     Wire#(Bool) read_request <- mkDWire(False);
 
@@ -270,23 +288,46 @@ module mkSPRAM#(XPMMemConfig memconfig)(BRAMServer#(Bit#(addr_w), Bit#(data_w)))
         request_legal[0] <= read_request;
     endrule
 
-    
+    interface Put request;
+        method Action put(BRAMRequestBE#(Bit#(addr_w), Bit#(data_w), be_w) rq);
+            ram.addra(rq.address);
+            be_wire   <= rq.writeen;
+            data_wire <= rq.datain;
+            if (rq.writeen == 0) begin
+                read_request <= True;
+            end
+        endmethod
+    endinterface
+
     interface Get response;
         method ActionValue#(Bit#(data_w)) get() if (request_legal[memconfig.readLatency - 1]);
             return ram.douta();
         endmethod
     endinterface
+endmodule
+
+module mkSPRAM#(XPMMemConfig memconfig)(BRAMServer#(Bit#(addr_w), Bit#(data_w)))
+    provisos (
+        Div#(data_w, 8, be_w),
+        Mul#(be_w, 8, data_w)
+    );
+
+    // Instantiate the byte-enabled SPRAM module
+    BRAMServerBE#(Bit#(addr_w), Bit#(data_w), be_w) ram_be <- mkSPRAM_BE(memconfig);
 
     interface Put request;
         method Action put(BRAMRequest#(Bit#(addr_w), Bit#(data_w)) rq);
-            ram.addra(rq.address);
-            if (rq.write) begin
-                ram.dina(rq.datain);
-            end else begin
-                read_request <= True;
-            end
+            BRAMRequestBE#(Bit#(addr_w), Bit#(data_w), be_w) rq_be = BRAMRequestBE {
+                writeen:         rq.write ? '1 : 0,
+                responseOnWrite: rq.responseOnWrite,
+                address:         rq.address,
+                datain:          rq.datain
+            };
+            ram_be.request.put(rq_be);
         endmethod
     endinterface
-endmodule
 
+    // Pass the response directly through without cycle latency
+    interface Get response = ram_be.response;
+endmodule
 endpackage
