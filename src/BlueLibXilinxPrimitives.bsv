@@ -2,6 +2,10 @@ package BlueLibXilinxPrimitives;
 
 import Clocks::*;
 import Vector::*;
+import BRAM::*;
+import GetPut::*;
+import ClientServer::*;
+import List::*;
 
 // Provides:
 // mkDNA_PORTE2
@@ -167,6 +171,80 @@ endmodule
 module mkICAPE3(ICAPE3_Ifc);
 	let _m <- vMkICAPE3;
 	return _m;
+endmodule
+
+(* always_ready, always_enabled *)
+interface XPM_SPRAM_Ifc#(numeric type addr_w, numeric type data_w);
+    method Action addra(Bit#(addr_w) addr);
+    method Action dina(Bit#(data_w) data);
+    method Bit#(data_w) douta();
+endinterface
+
+import "BVI" XPM_MEMORY_SPRAM =
+module vMkXPMSPRAM#(Integer memSizeWords, Integer readLatencyA)(XPM_SPRAM_Ifc#(addr_w, data_w));
+	default_clock clka(CLK);
+	default_reset rst(resta);
+
+    parameter ADDR_WIDTH_A = valueOf(addr_w);
+    parameter BYTE_WRITE_WIDTH_A = valueOf(addr_w);
+    parameter MEMORY_PRIMITIVE = "auto";
+    parameter MEMORY_SIZE = memSizeWords;
+    parameter READ_DATA_WIDTH_A = valueOf(data_w);
+    parameter READ_LATENCY_A = readLatencyA;
+    parameter READ_RESET_VALUE_A = "0";
+    parameter WRITE_DATA_WIDTH_A = valueOf(data_w);
+
+    // Tie off some ports
+    port sleep = 1'b0;
+    port regcea = 1'b1;
+
+    // Methods to set values
+    // the inhigh indicates, that the method is always enabled
+    method addra(addra) enable (ena);
+    method dina(dina) enable (wea);
+    method douta douta(); // always ready
+
+    schedule (addra) SB (dina);
+    schedule (douta) CF (addra, dina);
+endmodule
+
+
+module mkSPRAM#(Integer memSizeWords, Integer readLatencyA)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
+
+    // Create an inverted reset to use for the verilog module
+    Reset current_rst <- exposeCurrentReset;
+    Reset rst_high_type <- mkResetInverter(current_rst);
+    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memSizeWords, readLatencyA, reset_by rst_high_type);
+
+    // Track read requests to return data after the appropriate latency
+    List#(Reg#(Bool)) request_legal <- List::replicateM(readLatencyA, mkRegU);
+    Wire#(Bool) read_request <- mkDWire(False);
+
+    (* no_implicit_conditions *)
+    rule propagate_request_legal;
+        for (Integer i = readLatencyA - 1; i > 0; i = i - 1) begin
+            request_legal[i] <= request_legal[i - 1];
+        end
+        request_legal[0] <= read_request;
+    endrule
+
+    
+    interface Get response;
+        method ActionValue#(Bit#(data_w)) get() if (request_legal[readLatencyA - 1]);
+            return ram.douta();
+        endmethod
+    endinterface
+
+    interface Put request;
+        method Action put(BRAMRequest#(Bit#(addr_w), Bit#(data_w)) rq);
+            ram.addra(rq.address);
+            if (rq.write) begin
+                ram.dina(rq.datain);
+            end else begin
+                read_request <= True;
+            end
+        endmethod
+    endinterface
 endmodule
 
 endpackage
