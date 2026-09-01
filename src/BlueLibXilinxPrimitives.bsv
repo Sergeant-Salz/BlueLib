@@ -6,7 +6,6 @@ import BRAM::*;
 import GetPut::*;
 import ClientServer::*;
 import List::*;
-import DefaultValue :: *;
 
 // Provides:
 // mkDNA_PORTE2
@@ -217,8 +216,13 @@ endinterface
 
 import "BVI" xpm_memory_spram =
 module vMkXPMSPRAM#(XPMMemConfig cfg)(XPM_SPRAM_Ifc#(addr_w, data_w));
-	default_clock clk(clka);
-	default_reset rst(rsta);
+    // Create an active high reset signal
+    ReadOnly#(Bool) resetPositive <- isResetAsserted;
+    port rsta = resetPositive;
+    no_reset; // do not use implicity reset
+
+    // Set clock port name
+    default_clock clk(clka);
 
     parameter ADDR_WIDTH_A = valueOf(addr_w);
     parameter BYTE_WRITE_WIDTH_A = valueOf(data_w); // Set to data_w for word-enabld writes or 8 for byte enabled writes
@@ -252,10 +256,7 @@ endmodule
 
 module mkSPRAM#(XPMMemConfig memconfig)(BRAMServer#(Bit#(addr_w), Bit#(data_w)));
 
-    // Invert the reset to match Xilinx active high
-    Reset current_rst <- exposeCurrentReset;
-    Reset rst_high_type <- mkResetInverter(current_rst);
-    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memconfig, reset_by rst_high_type);
+    XPM_SPRAM_Ifc#(addr_w, data_w) ram <- vMkXPMSPRAM(memconfig);
 
     // Track read requests to return data after the appropriate latency
     List#(Reg#(Bool)) request_legal <- List::replicateM(memconfig.readLatency, mkRegU);
